@@ -542,15 +542,114 @@ function defaultState(){
 }
 
 const STORE = 'huxing-design-v1';
+const isHexColor = str => typeof str === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(str);
+
+function validateState(s){
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return false;
+  if (!Array.isArray(s.furniture)) return false;
+
+  for (const f of s.furniture) {
+    if (!f || typeof f !== 'object' || Array.isArray(f)) return false;
+    if (typeof f.id !== 'string' || typeof f.type !== 'string' || typeof f.name !== 'string') return false;
+    if (!Number.isFinite(f.cx) || !Number.isFinite(f.cy) || !Number.isFinite(f.rot)) return false;
+    if (!Number.isFinite(f.w) || f.w <= 0 || !Number.isFinite(f.d) || f.d <= 0) return false;
+    if (typeof f.color !== 'string' || !isHexColor(f.color)) return false;
+  }
+
+  if (s.rooms !== undefined) {
+    if (!s.rooms || typeof s.rooms !== 'object' || Array.isArray(s.rooms)) return false;
+    for (const key of Object.keys(s.rooms)) {
+      if (!ROOMS.some(r => r.id === key)) return false;
+      const room = s.rooms[key];
+      if (!room || typeof room !== 'object' || Array.isArray(room)) return false;
+      if (room.name !== undefined && typeof room.name !== 'string') return false;
+      if (room.mat !== undefined && (typeof room.mat !== 'string' || !Object.prototype.hasOwnProperty.call(MATS, room.mat))) return false;
+    }
+  }
+
+  if (s.demolished !== undefined) {
+    if (!Array.isArray(s.demolished)) return false;
+    for (const id of s.demolished) {
+      if (typeof id !== 'string' || !/^w\d+$/.test(id)) return false;
+      const idx = parseInt(id.slice(1), 10);
+      if (isNaN(idx) || idx < 0 || idx >= WALLS.length) return false;
+    }
+  }
+
+  if (s.measures !== undefined) {
+    if (!Array.isArray(s.measures)) return false;
+    for (const m of s.measures) {
+      if (!m || typeof m !== 'object' || Array.isArray(m)) return false;
+      if (!m.a || typeof m.a !== 'object' || !Number.isFinite(m.a.x) || !Number.isFinite(m.a.y)) return false;
+      if (!m.b || typeof m.b !== 'object' || !Number.isFinite(m.b.x) || !Number.isFinite(m.b.y)) return false;
+    }
+  }
+
+  return true;
+}
+
 function load(){
-  try { const s = JSON.parse(localStorage.getItem(STORE)); if (s && Array.isArray(s.furniture)) return fixState(s); } catch(e) {}
+  try { const s = JSON.parse(localStorage.getItem(STORE)); if (s && validateState(s)) return fixState(s); } catch(e) {}
   return null;
 }
+
 function fixState(s){
   const d = defaultState();
-  s.rooms = Object.assign(d.rooms, s.rooms || {});
-  s.demolished = s.demolished || []; s.measures = s.measures || [];
-  return s;
+  if (!s || typeof s !== 'object' || Array.isArray(s)) return d;
+
+  const safeRooms = { ...d.rooms };
+  if (s.rooms && typeof s.rooms === 'object' && !Array.isArray(s.rooms)) {
+    ROOMS.forEach(r => {
+      const room = s.rooms[r.id];
+      if (room && typeof room === 'object' && !Array.isArray(room)) {
+        const name = typeof room.name === 'string' ? room.name : d.rooms[r.id].name;
+        const mat = (typeof room.mat === 'string' && Object.prototype.hasOwnProperty.call(MATS, room.mat)) ? room.mat : d.rooms[r.id].mat;
+        safeRooms[r.id] = { name, mat };
+      }
+    });
+  }
+
+  const safeFurniture = Array.isArray(s.furniture) ? s.furniture.filter(f =>
+    f && typeof f === 'object' && !Array.isArray(f) &&
+    typeof f.id === 'string' &&
+    typeof f.type === 'string' &&
+    typeof f.name === 'string' &&
+    Number.isFinite(f.cx) && Number.isFinite(f.cy) &&
+    Number.isFinite(f.w) && f.w > 0 &&
+    Number.isFinite(f.d) && f.d > 0 &&
+    Number.isFinite(f.rot) &&
+    typeof f.color === 'string' && isHexColor(f.color)
+  ).map(f => ({
+    id: f.id,
+    type: f.type,
+    name: f.name,
+    cx: f.cx,
+    cy: f.cy,
+    w: f.w,
+    d: f.d,
+    rot: f.rot,
+    color: f.color
+  })) : d.furniture;
+
+  const safeDemolished = Array.isArray(s.demolished) ? s.demolished.filter(id =>
+    typeof id === 'string' && /^w\d+$/.test(id) && parseInt(id.slice(1), 10) < WALLS.length
+  ) : [];
+
+  const safeMeasures = Array.isArray(s.measures) ? s.measures.filter(m =>
+    m && typeof m === 'object' && !Array.isArray(m) &&
+    m.a && typeof m.a === 'object' && Number.isFinite(m.a.x) && Number.isFinite(m.a.y) &&
+    m.b && typeof m.b === 'object' && Number.isFinite(m.b.x) && Number.isFinite(m.b.y)
+  ).map(m => ({
+    a: { x: m.a.x, y: m.a.y },
+    b: { x: m.b.x, y: m.b.y }
+  })) : [];
+
+  return {
+    furniture: safeFurniture,
+    rooms: safeRooms,
+    demolished: safeDemolished,
+    measures: safeMeasures
+  };
 }
 
 const PX_MM = 25.4 / 96;                       // 1 CSS px = 0.2646 mm
@@ -1476,7 +1575,11 @@ $('#importJson').onclick = () => $('#fileIn').click();
 $('#fileIn').onchange = e => {
   const file = e.target.files[0]; if (!file) return;
   file.text().then(txt => {
-    try { const s = JSON.parse(txt); if (!Array.isArray(s.furniture)) throw 0; const b = snap(); state = fixState(s); ui.sel = null; commit(b); renderAll(); toast(tr('方案已导入', 'Plan imported')); }
+    try {
+      const s = JSON.parse(txt);
+      if (!validateState(s)) throw new Error('Invalid file format');
+      const b = snap(); state = fixState(s); ui.sel = null; commit(b); renderAll(); toast(tr('方案已导入', 'Plan imported'));
+    }
     catch(err){ toast(tr('文件格式不正确', 'Invalid file format')); }
   });
   e.target.value = '';
